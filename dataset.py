@@ -18,14 +18,14 @@ import numpy as np
 
 class DataSet(pd.DataFrame):
     
-    def __init__(self, path, time_cols, target, multivariate=True):
+    def __init__(self, multivariate, data_details):
         """
         Object inherits from pd DataFrame; preprocessing functionality added
         """
-        super().__init__(data=pd.read_csv(f'data/{path}.csv', index_col=0))
+        super().__init__(data=pd.read_csv(f'data/{data_details["DATA_PATH"]}.csv', index_col=0))
 
-        self.time_cols = time_cols
-        self.target = target
+        self.time_cols = data_details['TIME_COLS']
+        self.target = data_details['TARGET']
         self.multivariate = multivariate
 
         self.X_transformer = None
@@ -73,7 +73,7 @@ class DataSet(pd.DataFrame):
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
         X_val, y_val = None, None
         if val:
-            X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.2/0.8, shuffle=False)
+            X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.125, shuffle=False)
             X_val, y_val = self.handle_na(pd.concat([X_val, y_val], axis=1))
 
         # Impute NA's and delete rest of NA's
@@ -97,11 +97,12 @@ class DataSet(pd.DataFrame):
         self.y['train'] = self.y_transformer.fit_transform(np.array(y_train).reshape(-1, 1))
         self.y['val'] = self.y_transformer.transform(np.array(y_val).reshape(-1, 1))
         self.y['test'] = self.y_transformer.transform(np.array(y_test).reshape(-1, 1))
-        
+
         # If univariate, X = y
         if not self.multivariate:
             self.X = self.y
             self.X_transformer = self.y_transformer
+
 
     def get_data(self, split: Union[str, list]):
         """
@@ -130,7 +131,8 @@ class DataSet(pd.DataFrame):
         Function to get TimeseriesGenerator object
         """
 
-        generator = TimeseriesGenerator(data = np.squeeze(self.X[split]), targets = np.squeeze(self.y[split]),
+        if not self.multivariate:
+            generator = TimeseriesGenerator(data = np.reshape(self.X[split], (-1, 1)), targets = np.reshape(self.y[split], (-1,1)),
                                         length = length, batch_size = batch_size)
 
         return generator
