@@ -1,7 +1,9 @@
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
+import wandb
 
+from wandb.keras import WandbCallback
 from statsmodels.tsa.holtwinters import SimpleExpSmoothing, HoltWintersResults
 from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -13,7 +15,28 @@ Cell with hyperparameters and arguments
 The contents of this cell will probably have to be specified in the command line in the end
 """
 
-# Dataset hyperparameters
+
+"""
+Weights and bias initialization and configuration
+"""
+
+parameters = {
+        'dataset': 'sunspots',
+        'multivariate': False,
+        'gen_length': 48,
+        'gen_batch': 2,
+        'gen_features': 1,
+        'epochs': 20,            # not that important with early stopping, just make sure it's high enough
+        'test_val': 'val',
+        'lstm_units': 50,
+        'models': ['simple', 'simple_lstm', 'stacked_lstm'],
+        'patience': 2,
+        'optim': 'adam',
+        'loss': 'mse',
+        'repeats': 1
+    }
+
+# Dictionary with available datasets and models
 
 DATASETS = {'sunspots': {'DATA_PATH': 'sunspots',
                          'TARGET': 'Sunspots',
@@ -22,76 +45,101 @@ DATASETS = {'sunspots': {'DATA_PATH': 'sunspots',
                       'TARGET': 'pm2.5',
                       'TIME_COLS': ['year', 'month', 'day', 'hour']}}
 
-CURR_DATASET = 'sunspots'
-MULTIVARIATE = False
-
-# Time series generator parameters
-LENGTH = 24
-BATCH_SIZE = 4
-FEATURES = 1
-
-# Training parameters
-EPOCHS = 20             # not that important with early stopping, just make sure it's high enough
-TEST_VAL = 'val'
-
-
-# Models
 MODELS = {'naive': Naive(),
-          'simple': Baseline(input_shape=(BATCH_SIZE, LENGTH, FEATURES)),
-          'simple_lstm': Simple_LSTM(input_shape=(BATCH_SIZE, LENGTH, FEATURES))}
-CURR_MODELS = ['naive', 'simple_lstm']
+          'simple': Baseline(input_shape=(parameters['gen_batch'], parameters['gen_length'], parameters['gen_features'])),
+          'simple_lstm': Simple_LSTM(input_shape=(parameters['gen_batch'], parameters['gen_length'],
+                                                  parameters['gen_features']), units=parameters['lstm_units']),
+          'stacked_lstm': Stacked_LSTM(input_shape=(parameters['gen_batch'], parameters['gen_length'],
+                                                    parameters['gen_features']), units=parameters['lstm_units'])}
 
-# Plotting parameters
-TIME = 100
-
-def seed_everything(seed=1):
+def get_batch(batch_nr):
     """
-    Function to set random seeds for reproducibility
+    Function to get batch
     """
-    tf.random.set_seed(seed)
-    np.random.seed(seed)
 
+    # initialize current batch with zeros
+    batch_size = parameters['gen_batch']
+    current_batch = np.zeros((batch_size, parameters['gen_length'], parameters['gen_features']))
+
+    # fill in each row of batch
+    for batch in range(batch_size):
+        start_idx = parameters['gen_length'] - (batch + batch_nr*batch_size)
+
+        # if there is still data left from training set, take that
+        if start_idx > 0:
+            current_batch[batch, :start_idx, :] = train_X[-start_idx:]
+            current_batch[batch, start_idx:, :] = val_X[:batch + batch_nr*batch_size]
+        else: # only get data from validation data
+            current_batch[batch] = val_X[np.abs(start_idx): batch+batch_nr*batch_size]
+
+    return current_batch
 
 if __name__ == "__main__":
 
-    seed_everything()
-
     # Create own DataSet object and perform preprocessing
-    df = DataSet(MULTIVARIATE, DATASETS[CURR_DATASET])
-    df.preprocess()
+    df = DataSet(parameters['multivariate'], DATASETS[parameters['dataset']])
+    df.preprocess(parameters['test_val'])
 
     # Get loaders
-    train_generator = df.get_loaders(split='train', length=LENGTH, batch_size=BATCH_SIZE)
-    test_generator = df.get_loaders(split=TEST_VAL, length=LENGTH, batch_size=BATCH_SIZE)
+    train_generator = df.get_loaders(split='train', length=parameters['gen_length'], batch_size=parameters['gen_batch'])
+    test_generator = df.get_loaders(split=parameters['test_val'], length=parameters['gen_length'], batch_size=parameters['gen_batch'])
 
-    # Define early stopping
-    early_stop = EarlyStopping(patience=2)
+    train_X, train_y = df.get_data('train')
+    val_X, val_y = df.get_data(parameters['test_val'])
 
-    for curr_model in CURR_MODELS:
-        model = MODELS[curr_model]
-        model.compile(optimizer='adam', loss='mse')
+    assert len(val_y) % parameters['gen_batch'] == 0, f'Batch size of {parameters["gen_batch"]} is not compatible with' \
+                                                      f'length of dataset {len(val_y)}'
+    # print(f"Test generator first sample: {test_generator[0]}")
+    # print(f"First val data: {val_y[0]}\n"
+    #       f"Second val data: {val_y[1]}\n"
+    #       f"")
 
-        if curr_model != 'naive':       # naive model does not need training
-            model.fit_generator(generator=train_generator, epochs=EPOCHS, validation_data=test_generator,
-                            callbacks=[early_stop])
+    transformer = df.get_transformer('y')
+    inv_true_vals = np.squeeze(transformer.inverse_transform(val_y))
 
-        train_X, train_y = df.get_data('train')
-        val_X, val_y = df.get_data(TEST_VAL)
+    # Loop over every model
+    for curr_model in parameters['models']:
 
-        predictions = model.predict_generator(generator=test_generator)
+        experiment_name = f'{parameters["dataset"]}_{curr_model}'
 
-        transformer = df.get_transformer('y')
+        for _ in range(parameters['repeats']):
 
-        inv_predictions = np.squeeze(transformer.inverse_transform(np.reshape(predictions, (-1,1))))
-        inv_true_vals = np.squeeze(transformer.inverse_transform(val_y))[LENGTH:]
+            print(f"Repeat nr {_} of {curr_model}")
 
-        plt.plot(inv_predictions[-TIME:], label=f'Predictions {curr_model}')
+            # Initialize new run for every model
+            run = wandb.init(
+                            project='Master thesis',
+                            group=experiment_name,
+                            config=parameters,
+                            reinit=True
+            )
 
-        error = mean_absolute_error(inv_true_vals, inv_predictions)
-        rmse = np.sqrt(mean_squared_error(inv_true_vals, inv_predictions))
+            model = MODELS[curr_model]
+            model.compile(optimizer=parameters['optim'], loss=parameters['loss'],
+                          metrics=[tf.keras.metrics.RootMeanSquaredError()])
 
-        print((error, rmse))
+            if curr_model != 'naive':       # naive model does not need training
+                model.fit(train_generator, epochs=parameters['epochs'], validation_data=test_generator,
+                                    callbacks=[EarlyStopping(patience=parameters['patience']), WandbCallback()])
 
-    plt.plot(inv_true_vals[-TIME:], label='True')
-    plt.legend()
-    plt.show()
+            # Create own test loop here, since test generator cannot predict on first value of val set
+            predictions = []
+
+            for batch_nr in range(int(len(val_y)/parameters['gen_batch'])):
+                current_batch = get_batch(batch_nr)
+                current_prediction = model.predict(current_batch)
+                predictions.append(current_prediction)
+
+            inv_predictions = np.squeeze(transformer.inverse_transform(np.reshape(predictions, (-1, 1))))
+
+            error = mean_absolute_error(inv_true_vals, inv_predictions)
+            rmse = np.sqrt(mean_squared_error(inv_true_vals, inv_predictions))
+
+            run.log({'Model': curr_model,
+                        'MAE': error,
+                        'rMSE': rmse})
+
+            run.finish()
+
+            print((error, rmse))
+

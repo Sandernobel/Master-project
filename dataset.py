@@ -55,7 +55,7 @@ class DataSet(pd.DataFrame):
         return X, y
 
 
-    def preprocess(self, val=True):
+    def preprocess(self, val='val'):
         """
         Function to take care of preprocessing steps
         """
@@ -72,7 +72,7 @@ class DataSet(pd.DataFrame):
         # First split data before doing anything else
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
         X_val, y_val = None, None
-        if val:
+        if val=='val':
             X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.125, shuffle=False)
             X_val, y_val = self.handle_na(pd.concat([X_val, y_val], axis=1))
 
